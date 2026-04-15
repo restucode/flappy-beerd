@@ -4,7 +4,7 @@ import { coinbaseWallet, injected } from "wagmi/connectors";
 
 // Builder Code data suffix (ERC-8021) for onchain TX tracking on base.dev
 const DATA_SUFFIX =
-  "0x62635f387074337830686d0b0080218021802180218021802180218021" as `0x${string}`;
+  "0x62635f6b30696c397969690b0080218021802180218021802180218021" as `0x${string}`;
 
 export const config = createConfig({
   chains: [base],
