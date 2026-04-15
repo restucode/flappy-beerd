@@ -2,7 +2,12 @@ import type { Metadata, Viewport } from "next";
 import { Providers } from "./providers";
 import "./globals.css";
 
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://flappy-beerd.vercel.app");
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "Flappy Beerd — Play-to-Earn Onchain Arcade",
   description:
     "Play Flappy Beerd on the Base L2 network. Score high, earn ETH rewards, and record every play onchain via Builder Codes.",

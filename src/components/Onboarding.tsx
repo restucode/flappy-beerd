@@ -103,8 +103,10 @@ export function Onboarding({ onComplete }: OnboardingProps) {
           </div>
 
           {/* SCREEN AREA */}
-          <div className="relative flex-1 m-3 rounded-xl overflow-hidden" style={{ minHeight: 500 }}
+          <div
+            className="relative flex-1 m-3 rounded-xl overflow-hidden"
             style={{
+              minHeight: 500,
               background: "linear-gradient(180deg, #4DC9F6 0%, #1A8FE3 100%)",
               boxShadow: "inset 0 0 60px rgba(0,0,0,0.4), inset 0 0 0 2px rgba(0,0,0,0.3)",
             }}
