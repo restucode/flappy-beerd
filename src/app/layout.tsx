@@ -31,6 +31,8 @@ export const metadata: Metadata = {
     images: ["/og-image"],
   },
   other: {
+    // Base app association
+    "base:app_id": "69df2b604a3595d6a9533efa",
     // Farcaster Frame v2 meta
     "fc:frame": "vNext",
     "fc:frame:image": "/og-image",

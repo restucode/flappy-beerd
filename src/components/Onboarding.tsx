@@ -219,7 +219,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
                       letterSpacing: "0.04em",
                     }}
                   >
-                    BASE
+                    BEERD
                   </h1>
                   <p
                     className="font-pixel text-[9px] mt-2"
@@ -344,7 +344,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
                   letterSpacing: "0.1em",
                 }}
               >
-                ONCHAIN ▪ BASE SEPOLIA
+                ONCHAIN ▪ BASE
               </div>
             </div>
             <div className="flex gap-1.5">

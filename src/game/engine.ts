@@ -639,8 +639,8 @@ export class FlappyEngine {
     ctx.fillStyle = "#FFFFFF";
     ctx.strokeStyle = "rgba(0,0,0,0.3)";
     ctx.lineWidth = 3;
-    ctx.strokeText("FLAPPY BASE", this.W / 2, 140);
-    ctx.fillText("FLAPPY BASE", this.W / 2, 140);
+    ctx.strokeText("FLAPPY BEERD", this.W / 2, 140);
+    ctx.fillText("FLAPPY BEERD", this.W / 2, 140);
 
     // Subtitle
     ctx.font = "16px sans-serif";
