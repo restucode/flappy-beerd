@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#4DC9F6"/>
+      <stop offset="100%" stop-color="#1A8FE3"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#sky)"/>
+  <!-- Bird body -->
+  <g transform="translate(32 34)">
+    <g>
+      <animateTransform attributeName="transform" type="translate" values="0 -2; 0 2; 0 -2" dur="0.7s" repeatCount="indefinite"/>
+      <circle cx="0" cy="0" r="13" fill="#FFB300" stroke="#7A4A00" stroke-width="2"/>
+      <!-- Wing -->
+      <ellipse cx="-3" cy="2" rx="6" ry="4" fill="#FF8F00" stroke="#7A4A00" stroke-width="1.5">
+        <animate attributeName="ry" values="4; 1.5; 4" dur="0.35s" repeatCount="indefinite"/>
+      </ellipse>
+      <!-- Eye -->
+      <circle cx="5" cy="-3" r="3.5" fill="white" stroke="#7A4A00" stroke-width="1.2"/>
+      <circle cx="6" cy="-3" r="1.6" fill="#0A0F1F"/>
+      <!-- Beak -->
+      <polygon points="11,0 18,-1 11,3" fill="#FF6F00" stroke="#7A4A00" stroke-width="1.2"/>
+    </g>
+  </g>
+</svg>

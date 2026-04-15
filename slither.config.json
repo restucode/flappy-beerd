@@ -1,0 +1,7 @@
+{
+  "detectors_to_exclude": "naming-convention,solc-version,low-level-calls,assembly",
+  "filter_paths": "lib|test|node_modules",
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_optimization": true
+}
