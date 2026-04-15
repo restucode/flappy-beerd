@@ -22,12 +22,14 @@ next-env.d.ts
 cache/
 out/
 broadcast/
-lib/forge-std/
-lib/
+/lib/
 
 # ===== Environment / secrets (CRITICAL — NEVER COMMIT) =====
 .env
+.env.*
+deploy.sh
 .env.local
+.env.deploy
 .env.development.local
 .env.test.local
 .env.production.local
