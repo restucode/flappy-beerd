@@ -317,13 +317,18 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: 0 10px 30px rgba(0,0,0,0.4);
 }
 
-/* Aurora background — used on full-screen pages */
+/* Aurora background — used on full-screen pages.
+   filter: blur() on a 60vmax element is the single heaviest effect on this
+   page. On mobile GPUs that easily eats 4-6ms per frame. We keep the look
+   on desktop but shrink the blur radius and element size on small screens,
+   and switch to a radial gradient (no filter) on narrow viewports. */
 .aurora-bg {
   position: fixed;
   inset: 0;
   pointer-events: none;
   overflow: hidden;
   z-index: 0;
+  will-change: transform;
 }
 .aurora-bg::before,
 .aurora-bg::after {
@@ -334,6 +339,7 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: 50%;
   filter: blur(80px);
   opacity: 0.55;
+  will-change: transform, opacity;
 }
 .aurora-bg::before {
   top: -20%;
@@ -346,6 +352,17 @@ h1, h2, h3, h4, h5, h6 {
   right: -15%;
   background: radial-gradient(circle, var(--violet) 0%, transparent 60%);
   animation: auroraDrift 18s ease-in-out infinite reverse;
+}
+
+@media (max-width: 768px) {
+  .aurora-bg::before,
+  .aurora-bg::after {
+    width: 80vmax;
+    height: 80vmax;
+    filter: blur(40px);
+    opacity: 0.4;
+    animation: none;
+  }
 }
 
 /* ============================================================
@@ -515,5 +532,54 @@ canvas {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Mobile perf overrides
+   Blurs, large box-shadows, multi-layer text-shadows and background-position
+   animations are the main compositor/paint hot spots on mobile Safari and
+   mid-range Android. We keep the arcade look but drop the cost significantly
+   on small screens so the whole app (menus + game canvas) stays at 60fps.
+   ============================================================ */
+@media (max-width: 768px) {
+  /* Kill animated box-shadow (forces repaint every frame) */
+  .animate-pulse-glow { animation: none; }
+
+  /* Single-layer neon instead of 4-layer text-shadow stacks */
+  .neon-text,
+  .neon-blue,
+  .neon-pink,
+  .neon-cyan {
+    text-shadow: 0 0 8px currentColor;
+  }
+
+  /* Arcade frame: drop the outer blur-glow shadow, keep inset rim */
+  .arcade-frame {
+    box-shadow:
+      inset 0 0 0 2px rgba(139,92,246,0.4),
+      0 10px 30px rgba(0,0,0,0.5);
+  }
+
+  /* Gradient-pan keyframe repaints on every tick — freeze it on mobile */
+  .animate-gradient-pan,
+  .gradient-text {
+    animation: none;
+    background-position: 0% 50%;
+  }
+
+  /* CRT scanlines use mix-blend-mode which is expensive on mobile GPUs */
+  .crt-scanlines {
+    mix-blend-mode: normal;
+    opacity: 0.4;
+  }
+
+  /* Reduce the big drop shadow on primary buttons */
+  .btn-primary {
+    box-shadow: 0 3px 10px var(--base-blue-glow);
+    transition-duration: 0.15s;
+  }
+  .btn-primary:hover {
+    box-shadow: 0 4px 14px var(--violet-glow);
   }
 }

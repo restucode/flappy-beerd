@@ -151,9 +151,10 @@ export function FlappyGame({
 
   return (
     <div className="relative w-full" style={{ aspectRatio: "400/700" }}>
-      {/* Glow */}
+      {/* Glow — big blur-3xl is a major mobile GPU cost. Hidden on small
+          screens so the canvas behind it gets all the compositor budget. */}
       <div
-        className="absolute -inset-6 rounded-3xl opacity-50 blur-3xl pointer-events-none transition-opacity duration-700"
+        className="absolute -inset-6 rounded-3xl opacity-50 blur-3xl pointer-events-none transition-opacity duration-700 hidden md:block"
         style={{
           background: phase === "playing"
             ? "radial-gradient(ellipse, var(--base-blue-glow), var(--violet-glow) 50%, transparent 80%)"

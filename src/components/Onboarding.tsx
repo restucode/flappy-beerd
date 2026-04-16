@@ -18,6 +18,18 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   const { isConnected } = useAccount();
   const { connect, connectors, isPending } = useConnect();
 
+  // On small screens we halve the number of floating decorations. 20 absolutely-
+  // positioned animated spans are cheap on desktop but add measurable paint
+  // cost on mid-range phones.
+  const [decorCount, setDecorCount] = useState(20);
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 768px)");
+    const apply = () => setDecorCount(mql.matches ? 8 : 20);
+    apply();
+    mql.addEventListener("change", apply);
+    return () => mql.removeEventListener("change", apply);
+  }, []);
+
   useEffect(() => {
     if (isConnected) {
       const t = setTimeout(onComplete, 700);
@@ -47,7 +59,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
     >
       {/* Floating arcade decorations behind cabinet */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {[...Array(20)].map((_, i) => (
+        {[...Array(decorCount)].map((_, i) => (
           <div
             key={i}
             className="absolute font-pixel text-xs animate-float"

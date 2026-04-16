@@ -93,6 +93,11 @@ export class FlappyEngine {
   private H = 700;
   private scale = 1;
 
+  // Cached gradients — rebuilt on resize only (createLinearGradient per frame
+  // is a measurable cost on mobile GPUs).
+  private skyGrad: CanvasGradient | null = null;
+  private groundGrad: CanvasGradient | null = null;
+
   // Game objects
   private bird: Bird = this.createBird();
   private pipes: Pipe[] = [];
@@ -119,11 +124,12 @@ export class FlappyEngine {
 
   constructor(canvas: HTMLCanvasElement, callbacks: GameCallbacks) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d")!;
+    // alpha:false — opaque canvas skips the per-frame clear-to-transparent
+    // step and lets the compositor skip alpha blending with the page below.
+    this.ctx = canvas.getContext("2d", { alpha: false }) as CanvasRenderingContext2D;
     this.callbacks = callbacks;
     this.initClouds();
     this.resize();
-    // Start a unified render loop that runs in ALL states
     this.startLoop();
   }
 
@@ -134,7 +140,11 @@ export class FlappyEngine {
     if (!parent) return;
 
     const rect = parent.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    // Cap DPR: modern phones report 3+, which triples fragment shading cost
+    // for no visible benefit on a cartoon canvas this small. 2 is the sweet
+    // spot — sharp on retina without crushing mobile GPUs.
+    const rawDpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(rawDpr, 2);
 
     const aspect = 400 / 700;
     let w = rect.width;
@@ -148,10 +158,25 @@ export class FlappyEngine {
 
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
-    this.canvas.width = w * dpr;
-    this.canvas.height = h * dpr;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
 
     this.scale = (w / this.W) * dpr;
+
+    // Canvas dimension change clears ctx state — rebuild cached gradients.
+    this.rebuildGradients();
+  }
+
+  private rebuildGradients() {
+    const ctx = this.ctx;
+    this.skyGrad = ctx.createLinearGradient(0, 0, 0, this.H);
+    this.skyGrad.addColorStop(0, COLORS.sky1);
+    this.skyGrad.addColorStop(1, COLORS.sky2);
+
+    const gY = this.H - this.GROUND_H;
+    this.groundGrad = ctx.createLinearGradient(0, gY + 12, 0, this.H);
+    this.groundGrad.addColorStop(0, COLORS.ground1);
+    this.groundGrad.addColorStop(1, COLORS.ground2);
   }
 
   start() {
@@ -261,13 +286,38 @@ export class FlappyEngine {
     }
   }
 
-  // ---- Single unified loop for all states ----
+  // ---- Fixed-timestep loop ----
+  // Physics runs at a fixed 60Hz rate regardless of render FPS. This decouples
+  // gameplay feel from the display refresh — a 30fps mobile still plays at
+  // the same speed as a 120fps desktop, just with fewer redraws. Accumulator
+  // pattern with step-cap prevents spiral-of-death on slow devices.
 
   private startLoop() {
-    const tick = () => {
+    const FIXED_DT = 1000 / 60;
+    const MAX_STEPS = 5;
+    let lastTime = performance.now();
+    let accumulator = 0;
+
+    const tick = (now: number) => {
       if (this.destroyed) return;
       this.animationId = requestAnimationFrame(tick);
-      this.update();
+
+      // Clamp huge gaps (e.g. tab was backgrounded) so we don't simulate
+      // thousands of frames at once.
+      const delta = Math.min(100, now - lastTime);
+      lastTime = now;
+      accumulator += delta;
+
+      let steps = 0;
+      while (accumulator >= FIXED_DT && steps < MAX_STEPS) {
+        this.update();
+        accumulator -= FIXED_DT;
+        steps++;
+      }
+      // If we hit the step cap, drop the remaining backlog rather than
+      // accumulating it forever.
+      if (steps === MAX_STEPS) accumulator = 0;
+
       this.draw();
     };
     this.animationId = requestAnimationFrame(tick);
@@ -443,11 +493,8 @@ export class FlappyEngine {
     ctx.save();
     ctx.scale(this.scale, this.scale);
 
-    // Sky gradient
-    const skyGrad = ctx.createLinearGradient(0, 0, 0, this.H);
-    skyGrad.addColorStop(0, COLORS.sky1);
-    skyGrad.addColorStop(1, COLORS.sky2);
-    ctx.fillStyle = skyGrad;
+    // Sky — cached gradient (rebuilt only on resize)
+    ctx.fillStyle = this.skyGrad ?? COLORS.sky1;
     ctx.fillRect(0, 0, this.W, this.H);
 
     // Clouds
@@ -522,15 +569,15 @@ export class FlappyEngine {
   private drawPipe(ctx: CanvasRenderingContext2D, pipe: Pipe) {
     const capH = 24;
     const capOverhang = 4;
+    const edgeW = 5;
 
-    // Top pipe body
-    const topGrad = ctx.createLinearGradient(pipe.x, 0, pipe.x + pipe.width, 0);
-    topGrad.addColorStop(0, COLORS.pipeBorder);
-    topGrad.addColorStop(0.2, COLORS.pipeBody);
-    topGrad.addColorStop(0.8, COLORS.pipeBody);
-    topGrad.addColorStop(1, COLORS.pipeBorder);
-    ctx.fillStyle = topGrad;
+    // Top body — solid fills with edge shading (much cheaper than the old
+    // per-frame linear-gradient allocation, and visually near-identical).
+    ctx.fillStyle = COLORS.pipeBody;
     ctx.fillRect(pipe.x, 0, pipe.width, pipe.topHeight);
+    ctx.fillStyle = COLORS.pipeBorder;
+    ctx.fillRect(pipe.x, 0, edgeW, pipe.topHeight);
+    ctx.fillRect(pipe.x + pipe.width - edgeW, 0, edgeW, pipe.topHeight);
 
     // Top cap
     ctx.fillStyle = COLORS.pipeCap;
@@ -539,16 +586,14 @@ export class FlappyEngine {
     ctx.lineWidth = 2;
     ctx.strokeRect(pipe.x - capOverhang, pipe.topHeight - capH, pipe.width + capOverhang * 2, capH);
 
-    // Bottom pipe body
+    // Bottom body
     const bottomY = pipe.topHeight + pipe.gap;
     const bottomH = this.H - bottomY - this.GROUND_H;
-    const botGrad = ctx.createLinearGradient(pipe.x, 0, pipe.x + pipe.width, 0);
-    botGrad.addColorStop(0, COLORS.pipeBorder);
-    botGrad.addColorStop(0.2, COLORS.pipeBody);
-    botGrad.addColorStop(0.8, COLORS.pipeBody);
-    botGrad.addColorStop(1, COLORS.pipeBorder);
-    ctx.fillStyle = botGrad;
+    ctx.fillStyle = COLORS.pipeBody;
     ctx.fillRect(pipe.x, bottomY, pipe.width, bottomH);
+    ctx.fillStyle = COLORS.pipeBorder;
+    ctx.fillRect(pipe.x, bottomY, edgeW, bottomH);
+    ctx.fillRect(pipe.x + pipe.width - edgeW, bottomY, edgeW, bottomH);
 
     // Bottom cap
     ctx.fillStyle = COLORS.pipeCap;
@@ -564,10 +609,7 @@ export class FlappyEngine {
     ctx.fillStyle = COLORS.grass;
     ctx.fillRect(0, gY, this.W, 12);
 
-    const grdGrad = ctx.createLinearGradient(0, gY + 12, 0, this.H);
-    grdGrad.addColorStop(0, COLORS.ground1);
-    grdGrad.addColorStop(1, COLORS.ground2);
-    ctx.fillStyle = grdGrad;
+    ctx.fillStyle = this.groundGrad ?? COLORS.ground1;
     ctx.fillRect(0, gY + 12, this.W, this.GROUND_H - 12);
 
     ctx.strokeStyle = "rgba(0,0,0,0.1)";
