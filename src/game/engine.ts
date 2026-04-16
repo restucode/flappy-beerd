@@ -107,6 +107,9 @@ export class FlappyEngine {
   private flashAlpha = 0;
   private bestScore = 0;
   private idleTime = 0;
+  private startedAt = 0;
+  private endedAt = 0;
+  private replay: { t: number; type: "flap" }[] = [];
 
   // Constants
   private readonly GRAVITY = 0.45;
@@ -156,9 +159,13 @@ export class FlappyEngine {
     this.reset();
     this.status = "playing";
     this.callbacks.onStatusChange("playing");
-    // Give initial flap so bird doesn't just fall
+    this.startedAt = Date.now();
+    this.endedAt = 0;
+    this.replay = [];
+    // Initial flap — also recorded so replay.length matches tap count
     this.bird.velocity = this.FLAP_FORCE;
     this.bird.flapFrame = 8;
+    this.replay.push({ t: 0, type: "flap" });
   }
 
   flap() {
@@ -169,6 +176,9 @@ export class FlappyEngine {
     if (this.status === "gameover") return;
     this.bird.velocity = this.FLAP_FORCE;
     this.bird.flapFrame = 8;
+    if (this.startedAt > 0 && this.replay.length < 5000) {
+      this.replay.push({ t: Date.now() - this.startedAt, type: "flap" });
+    }
   }
 
   restart() {
@@ -407,12 +417,23 @@ export class FlappyEngine {
   private gameOver() {
     this.status = "gameover";
     this.flashAlpha = 1;
+    this.endedAt = Date.now();
     if (this.score > this.bestScore) {
       this.bestScore = this.score;
     }
     this.callbacks.onStatusChange("gameover");
     this.callbacks.onGameOver(this.score);
     // Loop keeps running — bird falls, flash fades
+  }
+
+  getDurationMs(): number {
+    if (!this.startedAt) return 0;
+    const end = this.endedAt || Date.now();
+    return Math.max(0, end - this.startedAt);
+  }
+
+  getReplay(): { t: number; type: "flap" }[] {
+    return this.replay.slice();
   }
 
   // ---- Rendering ----

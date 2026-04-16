@@ -114,6 +114,13 @@ export const flappyBaseAbi = [
     stateMutability: "view",
   },
   { type: "function", name: "paused", inputs: [], outputs: [{ name: "", type: "bool", internalType: "bool" }], stateMutability: "view" },
+  {
+    type: "function",
+    name: "nextGameId",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
 
   // --- Events ---
   { type: "event", name: "FreeTrialClaimed", inputs: [{ name: "player", type: "address", indexed: true, internalType: "address" }] },

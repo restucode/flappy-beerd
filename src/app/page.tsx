@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useAccount } from "wagmi";
 import { formatEther } from "viem";
 import { ConnectWallet } from "@/components/ConnectWallet";
-import { FlappyGame } from "@/components/FlappyGame";
+import { FlappyGame, type GameOverPayload } from "@/components/FlappyGame";
 import { GameOverlay } from "@/components/GameOverlay";
 import { Onboarding } from "@/components/Onboarding";
 import { BirdLogo } from "@/components/BirdLogo";
@@ -16,13 +16,13 @@ import { useGameContract } from "@/hooks/useGameContract";
 import { useSound } from "@/hooks/useSound";
 
 /**
- * Game phases — every transition requires blockchain confirmation:
+ * Game phases:
  *
- *   idle  ──(startGame TX)──▶  starting  ──(confirmed)──▶  playing
- *     ▲                                                       │
- *     │                                                  (game over)
- *     │                                                       ▼
- *   gameover ◀──(confirmed)── submitting ◀──(submitScore TX)──┘
+ *   idle ──(/api/start-session)──▶ starting ──▶ playing (no wallet prompt)
+ *     ▲                                           │
+ *     │                                      (game over)
+ *     │                                           ▼
+ *   gameover ◀──(batched startGame+submit)── submitting
  */
 type GamePhase = "idle" | "starting" | "playing" | "submitting" | "gameover";
 
@@ -37,6 +37,7 @@ export default function Home() {
   const [lastScore, setLastScore] = useState(0);
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+  const sessionRef = useRef<{ sessionId: string; startTime: number } | null>(null);
   const [mounted, setMounted] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
@@ -77,7 +78,7 @@ export default function Home() {
   const contractRef = useRef(contract);
   contractRef.current = contract;
 
-  // ---- User taps game: fire startGame TX, wait for confirm ----
+  // ---- User taps Play: request server session ticket, start game instantly ----
   const handleRequestPlay = useCallback(async () => {
     if (!canPlayRef.current || phaseRef.current !== "idle") return;
 
@@ -86,29 +87,41 @@ export default function Home() {
     setLastTxHash(null);
 
     try {
-      const { hash } = await contractRef.current.startGame();
-      setLastTxHash(hash);
-      // TX confirmed on chain → game can start
+      const s = await contractRef.current.startSession();
+      sessionRef.current = s;
       setPhase("playing");
     } catch (err: any) {
-      // User rejected or TX failed
-      setTxError(err?.shortMessage || err?.message || "Transaction failed");
+      setTxError(err?.shortMessage || err?.message || "Session failed");
       setPhase("idle");
     }
   }, []);
 
-  // ---- Game engine reports game over: fire submitScore TX ----
+  // ---- Game engine reports game over: batch startGame+submit in ONE popup ----
   const handleGameOver = useCallback(
-    async (score: number) => {
+    async ({ score, durationMs, replay }: GameOverPayload) => {
       setLastScore(score);
       setPhase("submitting");
       setTxError(null);
 
+      const session = sessionRef.current;
+      if (!session) {
+        setTxError("Session missing");
+        setPhase("gameover");
+        return;
+      }
+
       try {
-        const { hash } = await contractRef.current.submitScore(score);
-        setLastTxHash(hash);
+        const { hash } = await contractRef.current.playAndSubmit({
+          score,
+          durationMs,
+          replay,
+          sessionId: session.sessionId,
+        });
+        if (hash) setLastTxHash(hash);
       } catch (err: any) {
         setTxError(err?.shortMessage || err?.message || "Score submission failed");
+      } finally {
+        sessionRef.current = null;
       }
 
       setPhase("gameover");

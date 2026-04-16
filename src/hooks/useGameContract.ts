@@ -11,7 +11,10 @@ import {
 import {
   writeContract,
   waitForTransactionReceipt,
+  sendCalls,
+  getCallsStatus,
 } from "wagmi/actions";
+import { encodeFunctionData, type Hex } from "viem";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { config } from "@/config/wagmi";
@@ -21,9 +24,16 @@ import {
   PLAY_COST,
   flappyBaseAbi,
 } from "@/config/contract";
+import type { ReplayEvent } from "@/lib/antiCheat";
 
-// Builder Code dataSuffix — appended to EVERY transaction for base.dev tracking
-const DATA_SUFFIX = "0x62635f6b30696c397969690b0080218021802180218021802180218021";
+const DATA_SUFFIX = "0x62635f6b30696c397969690b0080218021802180218021802180218021" as Hex;
+
+export interface SubmitContext {
+  score: number;
+  sessionId: string;
+  durationMs: number;
+  replay?: ReplayEvent[];
+}
 
 export function useGameContract() {
   const { address, isConnected } = useAccount();
@@ -33,10 +43,8 @@ export function useGameContract() {
 
   const needsSwitch = isConnected && chainId !== CHAIN_ID;
 
-  // Watch new blocks — used to invalidate read queries every block
   const { data: blockNumber } = useBlockNumber({ watch: true, chainId: CHAIN_ID });
 
-  // ---- Reads ----
   const { data: playerInfo, refetch: refetchPlayer, queryKey: playerKey, isLoading: loadingPlayer } = useReadContract({
     address: FLAPPY_CONTRACT_ADDRESS,
     abi: flappyBaseAbi,
@@ -54,7 +62,6 @@ export function useGameContract() {
     query: { staleTime: 0 },
   });
 
-  // Re-fetch on every new block — keeps everything real-time
   useEffect(() => {
     if (blockNumber) {
       queryClient.invalidateQueries({ queryKey: playerKey });
@@ -115,7 +122,6 @@ export function useGameContract() {
     chainId: CHAIN_ID,
   });
 
-  // ---- Parse ----
   const quota = playerInfo ? Number(playerInfo[0]) : 0;
   const hasClaimedFreeTrial = playerInfo ? Boolean(playerInfo[1]) : false;
   const bestScore = playerInfo ? Number(playerInfo[2]) : 0;
@@ -129,7 +135,6 @@ export function useGameContract() {
   const bonusThreshold = bonusThresholdRaw !== undefined ? Number(bonusThresholdRaw) : 100;
   const totalGames = totalGamesRaw !== undefined ? Number(totalGamesRaw) : 0;
 
-  // ---- Helpers ----
   const ensureChain = useCallback(async () => {
     if (needsSwitch) {
       await switchChainAsync({ chainId: CHAIN_ID });
@@ -144,7 +149,7 @@ export function useGameContract() {
         functionName,
         args,
         chainId: CHAIN_ID,
-        dataSuffix: DATA_SUFFIX as `0x${string}`,
+        dataSuffix: DATA_SUFFIX,
         ...(value !== undefined ? { value } : {}),
       } as any);
 
@@ -158,7 +163,6 @@ export function useGameContract() {
     await Promise.all([refetchPlayer(), refetchPool()]);
   }, [refetchPlayer, refetchPool]);
 
-  // ---- Actions ----
   const claimFreeTrial = useCallback(async () => {
     await ensureChain();
     const result = await sendWithSuffix("claimFreeTrial");
@@ -177,82 +181,156 @@ export function useGameContract() {
     [ensureChain, sendWithSuffix, refreshAll, playCost]
   );
 
-  // gameId returned from latest startGame — needed for submitScore
-  const gameIdRef = useRef<bigint | null>(null);
-
-  const startGame = useCallback(async () => {
-    await ensureChain();
-    // Auto-recover: if any previous game is still active onchain
-    // (left over from a failed submit, page refresh, etc.), forfeit it first.
-    const stuck = (activeGameIdRaw as bigint | undefined) ?? 0n;
-    if (stuck > 0n || gameIdRef.current !== null) {
-      try {
-        await sendWithSuffix("forfeitGame");
-      } catch {}
-      gameIdRef.current = null;
+  const startSession = useCallback(async () => {
+    if (!address) throw new Error("Not connected");
+    const res = await fetch("/api/start-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ player: address }),
+    });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => "Session failed");
+      throw new Error(msg || "Session failed");
     }
-    const result = await sendWithSuffix("startGame");
-    // Parse GameStarted event log for gameId
-    try {
-      const log = result.receipt.logs.find(
-        (l: any) => l.address?.toLowerCase() === FLAPPY_CONTRACT_ADDRESS.toLowerCase()
-      );
-      if (log && log.topics?.[2]) {
-        gameIdRef.current = BigInt(log.topics[2]);
+    return (await res.json()) as { sessionId: string; startTime: number };
+  }, [address]);
+
+  const encodeCall = (functionName: string, args: readonly unknown[] = []) =>
+    (encodeFunctionData({ abi: flappyBaseAbi as any, functionName, args }) + DATA_SUFFIX.slice(2)) as Hex;
+
+  const tryBatch = useCallback(
+    async (calls: { to: `0x${string}`; data: Hex }[]): Promise<{ hash: string | null; batchId: string } | null> => {
+      try {
+        const id = await sendCalls(config, {
+          calls: calls.map((c) => ({ to: c.to, data: c.data })),
+          chainId: CHAIN_ID,
+        } as any);
+        const batchId = typeof id === "string" ? id : (id as any)?.id;
+        if (!batchId) return null;
+        const deadline = Date.now() + 90_000;
+        while (Date.now() < deadline) {
+          const status = (await getCallsStatus(config, { id: batchId } as any)) as any;
+          const st = status?.status;
+          if (st === "success" || st === 200 || st === "CONFIRMED") {
+            const receipts = status?.receipts as any[] | undefined;
+            const lastHash = receipts?.[receipts.length - 1]?.transactionHash ?? null;
+            return { hash: lastHash, batchId };
+          }
+          if (st === "failure" || st === "FAILED" || st === 500) {
+            throw new Error("Batch failed onchain");
+          }
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+        throw new Error("Batch timed out");
+      } catch (e: any) {
+        const msg = String(e?.message || e?.shortMessage || "");
+        if (/unsupported|method not|not support|wallet_sendCalls/i.test(msg)) {
+          return null;
+        }
+        throw e;
       }
-    } catch {}
-    await refreshAll();
-    return result;
-  }, [ensureChain, sendWithSuffix, refreshAll, activeGameIdRaw]);
+    },
+    []
+  );
+
+  const runSequential = useCallback(
+    async (ops: { fn: string; args?: readonly unknown[] }[]) => {
+      let last: { hash: string; receipt: any } | null = null;
+      for (const op of ops) {
+        last = await sendWithSuffix(op.fn, op.args ?? []);
+      }
+      return last!;
+    },
+    [sendWithSuffix]
+  );
+
+  const playAndSubmit = useCallback(
+    async (ctx: SubmitContext) => {
+      await ensureChain();
+      if (!address) throw new Error("Not connected");
+
+      const hasStuck = ((activeGameIdRaw as bigint | undefined) ?? 0n) > 0n;
+      const lowScore = ctx.score < Number(minScore);
+
+      if (lowScore) {
+        const ops: { fn: string; args?: readonly unknown[] }[] = [];
+        if (hasStuck) ops.push({ fn: "forfeitGame" });
+        ops.push({ fn: "startGame" });
+        ops.push({ fn: "forfeitGame" });
+
+        const calls = ops.map((o) => ({
+          to: FLAPPY_CONTRACT_ADDRESS,
+          data: encodeCall(o.fn, o.args ?? []),
+        }));
+
+        const batched = await tryBatch(calls);
+        const result = batched ?? (await runSequential(ops));
+        await refreshAll();
+        return { hash: result.hash, won: false };
+      }
+
+      const maxAttempts = 3;
+      let lastErr: any = null;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        let sig: { signature: Hex; deadline: number; gameId: string };
+        const signRes = await fetch("/api/sign-score", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            player: address,
+            score: ctx.score,
+            durationMs: ctx.durationMs,
+            replay: ctx.replay,
+            sessionId: ctx.sessionId,
+          }),
+        });
+        if (!signRes.ok) {
+          const msg = await signRes.text().catch(() => "Sign failed");
+          throw new Error(msg || "Sign failed");
+        }
+        sig = await signRes.json();
+
+        const ops: { fn: string; args?: readonly unknown[] }[] = [];
+        if (hasStuck) ops.push({ fn: "forfeitGame" });
+        ops.push({ fn: "startGame" });
+        ops.push({
+          fn: "submitScoreAndClaim",
+          args: [BigInt(sig.gameId), BigInt(ctx.score), BigInt(sig.deadline), sig.signature],
+        });
+
+        const calls = ops.map((o) => ({
+          to: FLAPPY_CONTRACT_ADDRESS,
+          data: encodeCall(o.fn, o.args ?? []),
+        }));
+
+        try {
+          const batched = await tryBatch(calls);
+          const result = batched ?? (await runSequential(ops));
+          await refreshAll();
+          return { hash: result.hash, won: ctx.score >= Number(minScore) };
+        } catch (e: any) {
+          lastErr = e;
+          const msg = String(e?.message || e?.shortMessage || "");
+          if (/Not your game|Sig expired|Already submitted/i.test(msg) && attempt < maxAttempts - 1) {
+            continue;
+          }
+          throw e;
+        }
+      }
+      throw lastErr ?? new Error("Submit failed");
+    },
+    [ensureChain, address, activeGameIdRaw, minScore, tryBatch, runSequential, refreshAll]
+  );
 
   const forfeitGame = useCallback(async () => {
     await ensureChain();
     const result = await sendWithSuffix("forfeitGame");
-    gameIdRef.current = null;
     await refreshAll();
     return result;
   }, [ensureChain, sendWithSuffix, refreshAll]);
-
-  const submitScore = useCallback(
-    async (score: number) => {
-      await ensureChain();
-      if (!address) throw new Error("Not connected");
-      const gameId = gameIdRef.current;
-      if (!gameId) throw new Error("No active game");
-
-      // Score below min reward threshold → no payout possible.
-      // Skip the signing roundtrip & call forfeitGame instead (cheaper, no API dependency).
-      if (score < Number(minScore)) {
-        const result = await sendWithSuffix("forfeitGame");
-        gameIdRef.current = null;
-        await refreshAll();
-        return result;
-      }
-
-      // Request signature from anti-cheat backend
-      const res = await fetch("/api/sign-score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ player: address, gameId: gameId.toString(), score }),
-      });
-      if (!res.ok) {
-        const msg = await res.text().catch(() => "Sign failed");
-        throw new Error(msg || "Sign failed");
-      }
-      const { signature, deadline } = (await res.json()) as { signature: `0x${string}`; deadline: number };
-
-      const result = await sendWithSuffix("submitScoreAndClaim", [
-        gameId,
-        BigInt(score),
-        BigInt(deadline),
-        signature,
-      ]);
-      gameIdRef.current = null;
-      await refreshAll();
-      return result;
-    },
-    [ensureChain, sendWithSuffix, refreshAll, address, minScore]
-  );
 
   return {
     isConnected,
@@ -273,8 +351,8 @@ export function useGameContract() {
 
     claimFreeTrial,
     buyQuota,
-    startGame,
-    submitScore,
+    startSession,
+    playAndSubmit,
     forfeitGame,
     refreshAll,
   };

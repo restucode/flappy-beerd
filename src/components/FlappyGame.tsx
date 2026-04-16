@@ -1,16 +1,19 @@
 "use client";
 
 import { useRef, useEffect, useCallback, useState } from "react";
-import { FlappyEngine, type GameStatus } from "@/game/engine";
+import { FlappyEngine } from "@/game/engine";
 import { Confetti } from "./Confetti";
 import { useSound } from "@/hooks/useSound";
 import { useCountUp } from "@/hooks/useCountUp";
-
-interface GameContractInfo {
-  rewardAmount?: bigint;
-}
+import type { ReplayEvent } from "@/lib/antiCheat";
 
 type GamePhase = "idle" | "starting" | "playing" | "submitting" | "gameover";
+
+export interface GameOverPayload {
+  score: number;
+  durationMs: number;
+  replay: ReplayEvent[];
+}
 
 interface FlappyGameProps {
   phase: GamePhase;
@@ -22,7 +25,7 @@ interface FlappyGameProps {
   txError: string | null;
   rewardEth?: string;
   onRequestPlay: () => void;
-  onGameOver: (score: number) => void;
+  onGameOver: (payload: GameOverPayload) => void;
   onBackToIdle: () => void;
 }
 
@@ -64,7 +67,12 @@ export function FlappyGame({
       onGameOver: (s) => {
         play("gameover");
         if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate([20, 30, 20]);
-        callbacksRef.current.onGameOver(s);
+        const eng = engineRef.current;
+        callbacksRef.current.onGameOver({
+          score: s,
+          durationMs: eng?.getDurationMs() ?? 0,
+          replay: eng?.getReplay() ?? [],
+        });
       },
       onStatusChange: () => {},
     });
@@ -175,7 +183,6 @@ export function FlappyGame({
               style={{ borderRadius: "999px", fontSize: "1rem" }}
             >
               ▶ Start Game
-              <span className="text-[10px] opacity-70 ml-1 font-semibold">onchain</span>
             </button>
           ) : (
             <div className="px-5 py-3 rounded-full animate-in"
@@ -197,10 +204,10 @@ export function FlappyGame({
           style={{ borderRadius: "var(--radius-lg)", background: "rgba(8,14,26,0.8)", backdropFilter: "blur(4px)" }}>
           <Spinner />
           <p className="mt-4 text-sm font-bold" style={{ fontFamily: "var(--font-display)", color: "var(--text-primary)" }}>
-            Starting game onchain...
+            Preparing session...
           </p>
           <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-            Confirm the transaction in your wallet
+            No wallet prompt — game starts instantly
           </p>
         </div>
       )}

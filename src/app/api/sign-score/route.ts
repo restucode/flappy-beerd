@@ -1,66 +1,131 @@
 import { NextResponse } from "next/server";
-import { keccak256, encodePacked, encodeAbiParameters, isAddress, type Address } from "viem";
+import {
+  keccak256,
+  encodeAbiParameters,
+  isAddress,
+  createPublicClient,
+  http,
+  type Address,
+} from "viem";
+import { base } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { FLAPPY_CONTRACT_ADDRESS } from "@/config/contract";
 import { TARGET_CHAIN_ID } from "@/config/wagmi";
+import { flappyBaseAbi } from "@/config/contract";
+import { verifyTicket } from "@/lib/session";
+import {
+  isSessionConsumed,
+  markSessionConsumed,
+  walletRateLimited,
+  validateReplay,
+  validateTiming,
+  type ReplayEvent,
+} from "@/lib/antiCheat";
 
-/**
- * Anti-cheat signing endpoint.
- *
- * Production hardening (must do before mainnet):
- *  - Replace the in-memory rate limiter with Redis/Upstash.
- *  - Verify the (player, gameId) actually started a game by reading the contract
- *    server-side (createPublicClient → readContract activeGameId).
- *  - Validate the score against an offchain replay log if you record gameplay.
- *  - Run this on a separate signer service so the key never touches your web host.
- *  - Rotate the trusted signer key on a schedule.
- */
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const SIGNER_PK = process.env.SCORE_SIGNER_PRIVATE_KEY as `0x${string}` | undefined;
 const MAX_SCORE = parseInt(process.env.MAX_SCORE_PER_GAME ?? "500", 10);
 const SIG_TTL_SEC = 120;
 
-// Naive in-memory rate limit (per player)
-const lastSign: Map<string, number> = (globalThis as any).__signRate ?? new Map();
-(globalThis as any).__signRate = lastSign;
-const RATE_LIMIT_MS = 1500;
+const RPC_URL =
+  process.env.BASE_RPC_URL ||
+  process.env.NEXT_PUBLIC_BASE_RPC_URL ||
+  "https://mainnet.base.org";
+
+const publicClient = createPublicClient({ chain: base, transport: http(RPC_URL) });
+
+interface SignScoreBody {
+  player?: string;
+  score?: number;
+  durationMs?: number;
+  replay?: ReplayEvent[];
+  sessionId?: string;
+}
 
 export async function POST(req: Request) {
   if (!SIGNER_PK || !/^0x[0-9a-fA-F]{64}$/.test(SIGNER_PK)) {
     return NextResponse.json({ error: "Signer not configured" }, { status: 500 });
   }
 
-  let body: { player?: string; gameId?: string; score?: number };
+  const ticketCookie = req.headers.get("cookie")?.match(/(?:^|;\s*)fb_session=([^;]+)/)?.[1];
+  if (!ticketCookie) {
+    return NextResponse.json({ error: "No session" }, { status: 401 });
+  }
+  const session = verifyTicket(decodeURIComponent(ticketCookie));
+  if (!session) {
+    return NextResponse.json({ error: "Invalid session" }, { status: 401 });
+  }
+
+  let body: SignScoreBody;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { player, gameId, score } = body;
+  const { player, score, durationMs, replay, sessionId } = body;
 
   if (!player || !isAddress(player)) {
     return NextResponse.json({ error: "Invalid player" }, { status: 400 });
   }
-  if (!gameId || !/^\d+$/.test(gameId)) {
-    return NextResponse.json({ error: "Invalid gameId" }, { status: 400 });
+  if (player.toLowerCase() !== session.player) {
+    return NextResponse.json({ error: "Player mismatch" }, { status: 403 });
+  }
+  if (!sessionId || sessionId !== session.sessionId) {
+    return NextResponse.json({ error: "Session mismatch" }, { status: 403 });
   }
   if (typeof score !== "number" || !Number.isInteger(score) || score < 0 || score > MAX_SCORE) {
     return NextResponse.json({ error: "Invalid score" }, { status: 400 });
   }
+  if (typeof durationMs !== "number" || durationMs < 0 || durationMs > 30 * 60 * 1000) {
+    return NextResponse.json({ error: "Invalid duration" }, { status: 400 });
+  }
 
-  // Rate limit
+  if (isSessionConsumed(session.sessionId)) {
+    return NextResponse.json({ error: "Session already used" }, { status: 409 });
+  }
+
   const now = Date.now();
-  const last = lastSign.get(player.toLowerCase()) ?? 0;
-  if (now - last < RATE_LIMIT_MS) {
+  const sessionAge = now - session.startTime;
+  if (sessionAge > 15 * 60 * 1000) {
+    return NextResponse.json({ error: "Session expired" }, { status: 410 });
+  }
+  if (sessionAge + 2000 < durationMs) {
+    return NextResponse.json({ error: "Duration exceeds session age" }, { status: 400 });
+  }
+
+  const timingErr = validateTiming(durationMs, score);
+  if (timingErr) {
+    return NextResponse.json({ error: timingErr }, { status: 400 });
+  }
+
+  const replayErr = validateReplay(replay, durationMs, score);
+  if (replayErr) {
+    return NextResponse.json({ error: replayErr }, { status: 400 });
+  }
+
+  if (walletRateLimited(player.toLowerCase())) {
     return NextResponse.json({ error: "Rate limited" }, { status: 429 });
   }
-  lastSign.set(player.toLowerCase(), now);
+
+  let predictedGameId: bigint;
+  try {
+    predictedGameId = (await publicClient.readContract({
+      address: FLAPPY_CONTRACT_ADDRESS,
+      abi: flappyBaseAbi,
+      functionName: "nextGameId",
+    })) as bigint;
+  } catch {
+    return NextResponse.json({ error: "RPC read failed" }, { status: 502 });
+  }
+
+  markSessionConsumed(session.sessionId);
 
   const account = privateKeyToAccount(SIGNER_PK);
   const deadline = Math.floor(now / 1000) + SIG_TTL_SEC;
 
-  // Match contract: keccak256(abi.encode(chainid, contract, player, gameId, score, deadline))
   const inner = keccak256(
     encodeAbiParameters(
       [
@@ -75,15 +140,18 @@ export async function POST(req: Request) {
         BigInt(TARGET_CHAIN_ID),
         FLAPPY_CONTRACT_ADDRESS,
         player as Address,
-        BigInt(gameId),
+        predictedGameId,
         BigInt(score),
         BigInt(deadline),
       ]
     )
   );
 
-  // Then EIP-191 prefix: "\x19Ethereum Signed Message:\n32" + inner
   const signature = await account.signMessage({ message: { raw: inner } });
 
-  return NextResponse.json({ signature, deadline });
+  return NextResponse.json({
+    signature,
+    deadline,
+    gameId: predictedGameId.toString(),
+  });
 }
