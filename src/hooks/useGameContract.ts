@@ -6,7 +6,6 @@ import {
   useReadContract,
   useChainId,
   useSwitchChain,
-  useBlockNumber,
 } from "wagmi";
 import {
   writeContract,
@@ -15,8 +14,6 @@ import {
   getCallsStatus,
 } from "wagmi/actions";
 import { encodeFunctionData, type Hex } from "viem";
-import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 import { config } from "@/config/wagmi";
 import {
   FLAPPY_CONTRACT_ADDRESS,
@@ -39,43 +36,53 @@ export function useGameContract() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
-  const queryClient = useQueryClient();
 
   const needsSwitch = isConnected && chainId !== CHAIN_ID;
 
-  const { data: blockNumber } = useBlockNumber({ watch: true, chainId: CHAIN_ID });
+  // Dynamic reads — refetch periodically (polling, not block-watch) to keep
+  // mobile/low-bandwidth networks from thrashing. Retries bounded so a flaky
+  // RPC does not leave us in a forever-loading state.
+  const DYNAMIC_QUERY = {
+    staleTime: 10_000,
+    gcTime: 60_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    retry: 2,
+    retryDelay: (n: number) => Math.min(1000 * 2 ** n, 5_000),
+  } as const;
 
-  const { data: playerInfo, refetch: refetchPlayer, queryKey: playerKey, isLoading: loadingPlayer } = useReadContract({
+  // Static reads — these values rarely change; cache for the whole session.
+  const STATIC_QUERY = {
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: 2,
+  } as const;
+
+  const { data: playerInfo, refetch: refetchPlayer } = useReadContract({
     address: FLAPPY_CONTRACT_ADDRESS,
     abi: flappyBaseAbi,
     functionName: "getPlayerInfo",
     args: address ? [address] : undefined,
     chainId: CHAIN_ID,
-    query: { enabled: !!address, staleTime: 0 },
+    query: { ...DYNAMIC_QUERY, enabled: !!address },
   });
 
-  const { data: poolBalance, refetch: refetchPool, queryKey: poolKey, isLoading: loadingPool } = useReadContract({
+  const { data: poolBalance, refetch: refetchPool } = useReadContract({
     address: FLAPPY_CONTRACT_ADDRESS,
     abi: flappyBaseAbi,
     functionName: "getPoolBalance",
     chainId: CHAIN_ID,
-    query: { staleTime: 0 },
+    query: DYNAMIC_QUERY,
   });
-
-  useEffect(() => {
-    if (blockNumber) {
-      queryClient.invalidateQueries({ queryKey: playerKey });
-      queryClient.invalidateQueries({ queryKey: poolKey });
-      queryClient.invalidateQueries({ queryKey: activeGameKey });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blockNumber]);
 
   const { data: minScoreRaw } = useReadContract({
     address: FLAPPY_CONTRACT_ADDRESS,
     abi: flappyBaseAbi,
     functionName: "minScoreForReward",
     chainId: CHAIN_ID,
+    query: STATIC_QUERY,
   });
 
   const { data: playCostRaw } = useReadContract({
@@ -83,6 +90,7 @@ export function useGameContract() {
     abi: flappyBaseAbi,
     functionName: "playCost",
     chainId: CHAIN_ID,
+    query: STATIC_QUERY,
   });
 
   const { data: rewardAmountRaw } = useReadContract({
@@ -90,6 +98,7 @@ export function useGameContract() {
     abi: flappyBaseAbi,
     functionName: "rewardAmount",
     chainId: CHAIN_ID,
+    query: STATIC_QUERY,
   });
 
   const { data: bonusRewardRaw } = useReadContract({
@@ -97,6 +106,7 @@ export function useGameContract() {
     abi: flappyBaseAbi,
     functionName: "bonusRewardAmount",
     chainId: CHAIN_ID,
+    query: STATIC_QUERY,
   });
 
   const { data: bonusThresholdRaw } = useReadContract({
@@ -104,15 +114,16 @@ export function useGameContract() {
     abi: flappyBaseAbi,
     functionName: "bonusScoreThreshold",
     chainId: CHAIN_ID,
+    query: STATIC_QUERY,
   });
 
-  const { data: activeGameIdRaw, queryKey: activeGameKey } = useReadContract({
+  const { data: activeGameIdRaw } = useReadContract({
     address: FLAPPY_CONTRACT_ADDRESS,
     abi: flappyBaseAbi,
     functionName: "activeGameId",
     args: address ? [address] : undefined,
     chainId: CHAIN_ID,
-    query: { enabled: !!address, staleTime: 0 },
+    query: { ...DYNAMIC_QUERY, enabled: !!address },
   });
 
   const { data: totalGamesRaw } = useReadContract({
@@ -120,6 +131,7 @@ export function useGameContract() {
     abi: flappyBaseAbi,
     functionName: "totalGamesPlayed",
     chainId: CHAIN_ID,
+    query: DYNAMIC_QUERY,
   });
 
   const quota = playerInfo ? Number(playerInfo[0]) : 0;
@@ -347,7 +359,7 @@ export function useGameContract() {
     bonusRewardAmount: bonusReward,
     bonusScoreThreshold: bonusThreshold,
     totalGames,
-    isLoading: (loadingPlayer && !!address) || loadingPool,
+    isLoading: (!!address && playerInfo === undefined) || poolBalance === undefined,
 
     claimFreeTrial,
     buyQuota,

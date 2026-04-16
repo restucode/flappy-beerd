@@ -16,7 +16,15 @@ export const config = createConfig({
     injected(),
   ],
   transports: {
-    [base.id]: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
+    // batch: merges multiple reads into a single multicall RPC request.
+    // Dramatically reduces load on mobile/slow networks where concurrent
+    // RPC calls pile up and time out.
+    [base.id]: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org", {
+      batch: { batchSize: 512, wait: 20 },
+      retryCount: 2,
+      retryDelay: 800,
+      timeout: 15_000,
+    }),
   },
   storage: createStorage({ storage: cookieStorage }),
   ssr: true,
